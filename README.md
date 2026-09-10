@@ -18,7 +18,7 @@ Supported software platforms:
 - S90 (7700/7710, 7.0s)
 
 Unknown (theoretically should be supported, but no one tested):
-- UIQ2 (7.0)
+- UIQ 2 (7.0)
 
 NOT supported:
 
