@@ -79,7 +79,14 @@ static void SslLogAppend(const TDesC8& aLine)
 	lf->f.Write(pre);
 	lf->f.Write(aLine);
 	lf->f.Write(_L8("\r\n"));
+#ifdef SSL_LOG_VERBOSE
 	if (++lf->lines % 16 == 0) lf->f.Flush();
+#else
+	// few lines per connection: flush each one, so a crash (e.g. KERN-EXEC 3 in the
+	// Java comms thread) doesn't lose the last lines before it
+	++lf->lines;
+	lf->f.Flush();
+#endif
 }
 
 static void SslLogClose()
