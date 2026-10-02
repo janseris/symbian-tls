@@ -297,6 +297,27 @@ void CTlsConnection::CancelAll()
 	LOG(Log::Printf(_L("+CTlsConnection::CancelAll()")));
 	CancelRecv();
 	CancelSend();
+#ifndef EKA2
+	// A client request whose state machine isn't running (e.g. waiting for a write
+	// started by the other one) would never be completed: complete it here, so the
+	// caller doesn't cancel it later on an already deleted connection.
+	if (iRecvData && !iRecvData->IsActive() && iRecvData->ClientStatus()
+			&& *iRecvData->ClientStatus() == KRequestPending) {
+		TRequestStatus* p = iRecvData->ClientStatus();
+		iRecvData->SetClientStatus(NULL);
+		LOG(Log::Printf(_L("  completing pending Recv with KErrCancel")));
+		User::RequestComplete(p, KErrCancel);
+	}
+	if (iSendData && !iSendData->IsActive() && iSendData->ClientStatus()
+			&& *iSendData->ClientStatus() == KRequestPending) {
+		TRequestStatus* p = iSendData->ClientStatus();
+		iSendData->SetClientStatus(NULL);
+		LOG(Log::Printf(_L("  completing pending Send with KErrCancel")));
+		User::RequestComplete(p, KErrCancel);
+	}
+	iReceivingData = EFalse;
+	iSendingData = EFalse;
+#endif
 	if (iHandshake) {
 		LOG(Log::Printf(_L("  handshake active: %d"), iHandshake->IsActive()));
 		iHandshake->Cancel(KErrNone);

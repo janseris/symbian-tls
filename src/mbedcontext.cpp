@@ -31,6 +31,17 @@ int CMbedContext::Pump(unsigned target) {
 			int wlen;
 
 			buf = br_ssl_engine_sendrec_buf(&sc.eng, &len);
+			if (target == BR_SSL_RECVAPP
+				&& !(state & (BR_SSL_SENDAPP | BR_SSL_RECVAPP | BR_SSL_RECVREC))) {
+				// The engine is closing (it got the server's close_notify and only wants
+				// to send its own). Drop that reply instead of starting an asynchronous
+				// socket write inside a read: the app is about to close the connection,
+				// and a write still pending at that point left the connection objects
+				// in an inconsistent state (seen as a freeze on lite.duckduckgo.com).
+				LOG(Log::Printf(_L("closing: dropping %d bytes of close_notify reply"), len));
+				br_ssl_engine_sendrec_ack(&sc.eng, len);
+				continue;
+			}
 			wlen = ioc.low_write(ioc.write_context, buf, len);
 			if (wlen < 0) {
 				return wlen;
