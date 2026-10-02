@@ -18,6 +18,7 @@ SYSTEMINCLUDE ..\..\bearssl\inc
 DEFFILE ssl.def
 
 LIBRARY estlib.lib
+LIBRARY x509.lib
 
 STATICLIBRARY bearssl.lib
 

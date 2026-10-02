@@ -728,7 +728,7 @@ TInt CTlsConnection::SetOpt(TUint aOptionName,TUint aOptionLevel, const TDesC8& 
 	{
 		switch (aOptionName)
 		{
-		case KSoSSLDomainName:		
+		case 0x505 /*KSoSSLDomainName*/:		
 			{
 			if (iMbedContext) {
 				// text conversion
