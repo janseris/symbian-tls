@@ -177,6 +177,11 @@ public:
 	// KSoSSLDomainName): the handshake is postponed until the first Send, whose HTTP
 	// request carries a Host: header, which is then used for SNI.
 	TBool iDeferredHandshake;
+	// Set when the handshake failed (e.g. the server closed the connection after the
+	// ClientHello: KErrEof). Every later Send / Recv / handshake request completes with
+	// it at once. Before, a Send after a failed deferred handshake was left pending
+	// forever: the Java app hung while connecting and the phone could freeze.
+	TInt iHandshakeError;
 	// a second Send issued while the deferred handshake is still running
 	const TDesC8* iQueuedSendDesc;
 	TRequestStatus* iQueuedSendStatus;

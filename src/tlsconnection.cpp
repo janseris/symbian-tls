@@ -981,6 +981,11 @@ void CTlsConnection::StartClientHandshake(TRequestStatus& aStatus)
  */
 {
 	LOG(Log::Printf(_L("CTlsConnection::StartClientHandshake()")));
+	if (iHandshakeError) {
+		TRequestStatus* p = &aStatus;
+		User::RequestComplete(p, iHandshakeError);
+		return;
+	}
 #ifndef EKA2
 	if (iMbedContext && iSocket) {
 		TInetAddr remote;
@@ -1104,6 +1109,9 @@ TBool CTlsConnection::OnCompletion(CStateMachine* aStateMachine)
 			// handshake failed
 //			Reset();
 			iHandshaked = EFalse;
+			iHandshakeError = aStateMachine->LastError() != KErrNone ? aStateMachine->LastError() : KErrEof;
+			LOG(Log::Printf(_L("handshake failed (%d): pending Send %d, queued %d; later requests fail with it"),
+				iHandshakeError, iSendData && iSendData->ClientStatus() ? 1 : 0, iQueuedSendStatus ? 1 : 0));
 			if (iDeferredHandshake) {
 				iDeferredHandshake = EFalse;
 				TRequestStatus* p = iSendData->ClientStatus();
@@ -1136,6 +1144,11 @@ TBool CTlsConnection::SendData(const TDesC8& aDesc, TRequestStatus& aStatus)
 	TRequestStatus* pStatus = &aStatus;
 	if (!iSendData) {
 		User::RequestComplete(pStatus, KErrNotReady);
+		return EFalse;
+	}
+	if (iHandshakeError) {
+		LOG(Log::Printf(_L("CTlsConnection::Send() after failed handshake: %d"), iHandshakeError));
+		User::RequestComplete(pStatus, iHandshakeError);
 		return EFalse;
 	}
 	if (iSendingData) {
@@ -1199,6 +1212,11 @@ TBool CTlsConnection::RecvData(TDes8& aDesc, TRequestStatus& aStatus)
 	TRequestStatus* pStatus = &aStatus;
 	if (!iRecvData) {
 		User::RequestComplete(pStatus, KErrNotReady);
+		return EFalse;
+	}
+	if (iHandshakeError) {
+		LOG(Log::Printf(_L("CTlsConnection::Recv() after failed handshake: %d"), iHandshakeError));
+		User::RequestComplete(pStatus, iHandshakeError);
 		return EFalse;
 	}
 	if (iReceivingData) {
