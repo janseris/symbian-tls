@@ -56,6 +56,9 @@ public:
 	TInt iWriteState;
 	TInt iWriteLength;
 	TSockXfrLength iRecvLen;
+	// read-ahead: bytes received from the socket but not yet handed to the TLS engine
+	TInt iRxPos;
+	TInt iRxLen;
 	
 };
 

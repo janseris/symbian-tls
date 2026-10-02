@@ -56,23 +56,30 @@ LOCAL_C int send_callback(void *ctx, const unsigned char *buf, size_t len)
 LOCAL_C int recv_callback(void *ctx, unsigned char *buf, size_t len)
 {
 	CBio* s = (CBio*) ctx;
-	LOG(Log::Printf(_L("+recv_callback: %d state: %d"), len, s->iReadState));
+	LOG(Log::Printf(_L("+recv_callback: %d state: %d buffered: %d"), len, s->iReadState, s->iRxLen - s->iRxPos));
 	
 	TPtr8 des = TPtr8(buf, 0, len);
 	
 	if (s->iReadState == 1) {
-		// TODO check for overflow
-		if (s->iPtrHBuf.Length() > len) {
-			User::Panic(_L("newtls"), 1);
-			return 0;
-		}
+		// a socket read finished: its data becomes the read-ahead buffer
 		if (s->iPtrHBuf.Length() == 0) {
 			return MBEDTLS_ERR_SSL_WANT_READ;
 		}
-		des.Copy(s->iPtrHBuf);
+		s->iRxPos = 0;
+		s->iRxLen = s->iPtrHBuf.Length();
 		s->iReadState = 0;
-		LOG(Log::Printf(_L("-recv_callback %d"), s->iPtrHBuf.Length()));
-		return s->iPtrHBuf.Length();
+	}
+	if (s->iRxPos < s->iRxLen) {
+		// Serve from what's already been received. The socket is read in large
+		// chunks (up to the whole buffer), so most TLS record headers and bodies
+		// are handed over synchronously instead of costing one asynchronous socket
+		// read each (5-byte header, then body): that made downloads crawl.
+		TInt n = s->iRxLen - s->iRxPos;
+		if (n > (TInt) len) n = (TInt) len;
+		Mem::Copy(buf, s->iPtrHBuf.Ptr() + s->iRxPos, n);
+		s->iRxPos += n;
+		LOG(Log::Printf(_L("-recv_callback %d (buffered)"), n));
+		return n;
 	}
 	if (s->iReadState == 0) {
 		s->iReadLength = (TInt) len;
@@ -129,8 +136,10 @@ CBio::CBio(CTlsConnection& aTlsConnection) :
 void CBio::ConstructL(CTlsConnection& aTlsConnection)
 {
 	if (!iDataIn) {
-		iDataIn = HBufC8::NewL(0x1000);
+		iDataIn = HBufC8::NewL(0x4000); // read-ahead buffer (16 KB)
 	}
+	iRxPos = 0;
+	iRxLen = 0;
 }
 
 CBio::~CBio()
@@ -145,26 +154,12 @@ void CBio::Recv(TRequestStatus* aStatus)
 		User::RequestComplete(aStatus, KErrNone);
 		return;
 	}
-	TInt len = iReadLength;
-	if (len == -1) {
-		// default to header size
-		len = 5;
-	}
-	LOG(Log::Printf(_L("+CBio::Recv %d"), len));
-	
-	if (iReadLength > iDataIn->Des().MaxLength()) {
-		// grow buffer
-		LOG(Log::Printf(_L("Growing input buffer")));
-		// TODO: use realloc?
-//		iDataIn->ReAllocL(iReadLength);
-		delete iDataIn;
-		iDataIn = NULL;
-		iDataIn = HBufC8::NewL(iReadLength);
-		if (!iDataIn) {
-			User::RequestComplete(aStatus, KErrNoMemory);
-			return;
-		}
-	}
+	// read as much as the socket has (up to the whole buffer), not just what the TLS
+	// engine asked for: the rest is served from the buffer by recv_callback
+	TInt len = iDataIn->Des().MaxLength();
+	LOG(Log::Printf(_L("+CBio::Recv up to %d (engine wants %d)"), len, iReadLength));
+	iRxPos = 0;
+	iRxLen = 0;
 	iPtrHBuf.Set((TUint8*)iDataIn->Des().Ptr(), 0, len);
 #ifdef USE_GENERIC_SOCKET
 	if (iIsGenericSocket) {
@@ -205,6 +200,8 @@ void CBio::ClearRecvBuffer()
 {
 	LOG(Log::Printf(_L("CRecvEvent::ClearRecvBuffer()")));
 	iReadState = 0;
+	iRxPos = 0;
+	iRxLen = 0;
 }
 
 void CBio::ClearSendBuffer()
