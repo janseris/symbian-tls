@@ -10,6 +10,7 @@
 
 static TInt get_last_bearssl_error(br_ssl_engine_context* eng) {
 	int err = br_ssl_engine_last_error(eng);
+	LOG(Log::Printf(_L("bearssl closed, last error %d"), err));
 	if (err == BR_ERR_OK) return MBEDTLS_ERR_SSL_CONN_EOF;
 	return -err;
 }
@@ -332,7 +333,14 @@ TInt CMbedContext::Read(unsigned char* aData, TInt aLen)
 {
 #ifdef BEARSSL
 	int r = Pump(BR_SSL_RECVAPP); 
-	if (r < 0) return r;
+	if (r < 0) {
+		// Pump returns -1 once the engine is closed, e.g. after the server's close_notify:
+		// report a clean close as EOF instead of error -1 (KErrNotFound).
+		if (br_ssl_engine_current_state(&sc.eng) == BR_SSL_CLOSED) {
+			return get_last_bearssl_error(&sc.eng);
+		}
+		return r;
+	}
 		
 	unsigned state = br_ssl_engine_current_state(&sc.eng);
 	if (state == BR_SSL_CLOSED) {

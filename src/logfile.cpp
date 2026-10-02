@@ -26,7 +26,39 @@
 
 const TInt KHexDumpWidth = 16;
 
-#if 1
+#ifdef SSL_LOG
+#include <f32file.h>
+_LIT(KSSLLogPath, "C:\\Logs\\SSL\\SSLLog.txt");
+
+// Appends one line "hh:mm:ss.mmm [thread] text" to C:\Logs\SSL\SSLLog.txt.
+// The file is opened and closed for every line, so it survives a crash or a frozen phone,
+// and several processes (browser, Java) can log at the same time.
+static void SslLogAppend(const TDesC8& aLine)
+{
+	RFs fs;
+	if (fs.Connect() != KErrNone) return;
+	RFile f;
+	TInt r = f.Open(fs, KSSLLogPath, EFileWrite | EFileShareAny);
+	if (r == KErrNotFound) r = f.Create(fs, KSSLLogPath, EFileWrite | EFileShareAny);
+	if (r == KErrNone) {
+		TInt pos = 0;
+		f.Seek(ESeekEnd, pos);
+		TBuf8<64> pre;
+		TTime now;
+		now.HomeTime();
+		TDateTime dt = now.DateTime();
+		pre.Format(_L8("%02d:%02d:%02d.%03d [%x] "), dt.Hour(), dt.Minute(), dt.Second(),
+			dt.MicroSecond() / 1000, (TUint) RThread().Id());
+		f.Write(pre);
+		f.Write(aLine);
+		f.Write(_L8("\r\n"));
+		f.Close();
+	}
+	fs.Close();
+}
+#endif
+
+#if !defined(SSL_LOG)
 #define DYNAMIC
 struct LogGlobal {
 	RLibrary lib;
@@ -37,6 +69,13 @@ struct LogGlobal {
 
 void Log::Init()
 {
+#ifdef SSL_LOG
+	TFileName name = RProcess().FileName();
+	TBuf8<0x100> b;
+	b.Copy(_L8("Log::Init process="));
+	b.Append(name.Right(0x80 < name.Length() ? 0x80 : name.Length()));
+	SslLogAppend(b);
+#endif
 #ifdef DYNAMIC
 	LogGlobal* global = (LogGlobal*)Dll::Tls();
 	if (global) return;
@@ -76,6 +115,10 @@ void Log::Write(const TDesC& aDes)
 	if (global && global->Logger_Write16 != NULL) {
 		global->Logger_Write16(KSSLLogDir,KSSLLogFileName,EFileLoggingModeAppend,aDes);
 	}
+#elif defined(SSL_LOG)
+	TBuf8<0x200> b;
+	b.Copy(aDes.Left(0x200));
+	SslLogAppend(b);
 #else
 	RFileLogger::Write(KSSLLogDir,KSSLLogFileName,EFileLoggingModeAppend,aDes);
 #endif
@@ -88,6 +131,8 @@ void Log::Write8(const TDesC8& aDes)
 	if (global && global->Logger_Write8 != NULL) {
 		global->Logger_Write8(KSSLLogDir,KSSLLogFileName,EFileLoggingModeAppend,aDes);
 	}
+#elif defined(SSL_LOG)
+	SslLogAppend(aDes);
 #else
 	RFileLogger::Write(KSSLLogDir,KSSLLogFileName,EFileLoggingModeAppend,aDes);
 #endif

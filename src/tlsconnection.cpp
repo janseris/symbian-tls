@@ -298,8 +298,25 @@ void CTlsConnection::CancelAll()
 	CancelRecv();
 	CancelSend();
 	if (iHandshake) {
+		LOG(Log::Printf(_L("  handshake active: %d"), iHandshake->IsActive()));
 		iHandshake->Cancel(KErrNone);
 	}
+#ifndef EKA2
+	if (iQueuedSendStatus) {
+		TRequestStatus* q = iQueuedSendStatus;
+		iQueuedSendStatus = NULL;
+		iQueuedSendDesc = NULL;
+		User::RequestComplete(q, KErrCancel);
+	}
+	if (iQueuedSendInFlight) {
+		TRequestStatus* q = iQueuedSendInFlight;
+		iQueuedSendInFlight = NULL;
+		User::RequestComplete(q, KErrCancel);
+	}
+	if (iSocket) {
+		iSocket->CancelAll(); // no raw socket request may complete after we're gone
+	}
+#endif
 	LOG(Log::Printf(_L("-CTlsConnection::CancelAll()")));
 }
 
@@ -719,7 +736,8 @@ TInt CTlsConnection::SetOpt(TUint aOptionName,TUint aOptionLevel, const TDesC8& 
  * @return Any one of the system error codes, or KErrNone on success.
  */
 {
-	LOG(Log::Printf(_L("CTlsConnection::SetOpt(): name: %x, level: %x"), aOptionName, aOptionLevel));
+	LOG(Log::Printf(_L("CTlsConnection::SetOpt(): name: %x, level: %x, len: %d"), aOptionName, aOptionLevel, aOption.Length()));
+	LOG(Log::HexDump(_S("  opt "), _S("      "), aOption.Ptr(), aOption.Length() > 64 ? 64 : aOption.Length()));
 	TInt ret=KErrNotSupported;
 	switch(aOptionLevel)
 	{
@@ -846,6 +864,90 @@ TInt CTlsConnection::SetServerCert(const CX509Certificate& /*aCert*/)
 	return KErrNotSupported;
 }
 
+#ifndef EKA2
+// SNI fallback for clients that never pass the host name (KSoSSLDomainName), e.g. the
+// MIDP HttpsConnection on S80v2: C:\System\Data\ssl_sni.txt holds lines
+// "<IPv4 address> <host name>"; when the connected peer's address matches, that host
+// name is used for SNI. Lines starting with # are comments.
+#include <f32file.h>
+_LIT(KSniMapFile, "C:\\System\\Data\\ssl_sni.txt");
+
+static char* LookupSniHost(const TDesC8& aAddr)
+{
+	RFs fs;
+	if (fs.Connect() != KErrNone) return NULL;
+	RFile f;
+	char* result = NULL;
+	if (f.Open(fs, KSniMapFile, EFileRead | EFileShareReadersOnly) == KErrNone) {
+		HBufC8* buf = HBufC8::New(4096);
+		if (buf) {
+			TPtr8 p = buf->Des();
+			f.Read(p);
+			TPtrC8 rest(p);
+			while (rest.Length() > 0 && !result) {
+				TInt nl = rest.Locate('\n');
+				TPtrC8 line = nl < 0 ? rest : rest.Left(nl);
+				rest.Set(nl < 0 ? TPtrC8() : rest.Mid(nl + 1));
+				// trim CR and spaces
+				while (line.Length() > 0 && (line[line.Length() - 1] == '\r' || line[line.Length() - 1] == ' ' || line[line.Length() - 1] == '\t'))
+					line.Set(line.Left(line.Length() - 1));
+				if (line.Length() == 0 || line[0] == '#') continue;
+				TInt sp = line.Locate(' ');
+				if (sp < 0) sp = line.Locate('\t');
+				if (sp <= 0) continue;
+				TPtrC8 ip = line.Left(sp);
+				TPtrC8 host = line.Mid(sp + 1);
+				while (host.Length() > 0 && (host[0] == ' ' || host[0] == '\t')) host.Set(host.Mid(1));
+				if (host.Length() > 0 && ip.Compare(aAddr) == 0) {
+					result = new char[host.Length() + 1];
+					if (result) {
+						Mem::Copy(result, host.Ptr(), host.Length());
+						result[host.Length()] = 0;
+					}
+				}
+			}
+			delete buf;
+		}
+		f.Close();
+	}
+	fs.Close();
+	return result;
+}
+#endif
+
+#ifndef EKA2
+// "GET /x HTTP/1.1\r\nHost: example.com:443\r\n..." -> "example.com" (new char[]),
+// or NULL if aData doesn't look like an HTTP request with a Host header.
+static char* HostFromHttpRequest(const TDesC8& aData)
+{
+	if (aData.Length() < 16 || aData[0] < 'A' || aData[0] > 'Z') return NULL;
+	TInt i = 0;
+	const TInt n = aData.Length();
+	while (i < n) {
+		TInt nl = aData.Mid(i).Locate('\n');
+		if (nl < 0) break;
+		i += nl + 1;
+		if (n - i >= 5) {
+			TPtrC8 key = aData.Mid(i, 5);
+			if (key.CompareF(_L8("Host:")) == 0) {
+				TInt s = i + 5;
+				while (s < n && (aData[s] == ' ' || aData[s] == '\t')) s++;
+				TInt e = s;
+				while (e < n && aData[e] != '\r' && aData[e] != '\n' && aData[e] != ':' && aData[e] != ' ') e++;
+				if (e <= s) return NULL;
+				char* host = new char[e - s + 1];
+				if (!host) return NULL;
+				Mem::Copy(host, aData.Ptr() + s, e - s);
+				host[e - s] = 0;
+				return host;
+			}
+		}
+		if (n - i >= 2 && aData[i] == '\r' && aData[i + 1] == '\n') break; // end of headers
+	}
+	return NULL;
+}
+#endif
+
 void CTlsConnection::StartClientHandshake(TRequestStatus& aStatus)
 /**
  * Starts a client request and initiates a handshake 
@@ -858,6 +960,36 @@ void CTlsConnection::StartClientHandshake(TRequestStatus& aStatus)
  */
 {
 	LOG(Log::Printf(_L("CTlsConnection::StartClientHandshake()")));
+#ifndef EKA2
+	if (iMbedContext && iSocket) {
+		TInetAddr remote;
+		iSocket->RemoteName(remote);
+		TBuf<64> addr16;
+		remote.Output(addr16);
+		TBuf8<64> addr;
+		addr.Copy(addr16);
+		LOG(Log::Printf(_L("  peer %S port %d, hostname %s"), &addr16, remote.Port(),
+			iMbedContext->Hostname() ? _S("set") : _S("NOT SET")));
+		if (iMbedContext->Hostname() == NULL) {
+			char* host = LookupSniHost(addr);
+			if (host) {
+				LOG(Log::Printf8(_L8("  SNI from ssl_sni.txt: %s"), host));
+				iMbedContext->SetHostname(host);
+			}
+		}
+		if (iMbedContext->Hostname() == NULL && !iHandshaked && !iDataMode && !Busy()) {
+			// postpone the real handshake until the first Send (see SendData)
+			LOG(Log::Printf(_L("  no host name: handshake deferred until first Send")));
+			iDeferredHandshake = ETrue;
+			TRequestStatus* p = &aStatus;
+			User::RequestComplete(p, KErrNone);
+			return;
+		}
+		else {
+			LOG(Log::Printf8(_L8("  SNI: %s"), iMbedContext->Hostname()));
+		}
+	}
+#endif
 	TRequestStatus* pStatus = &aStatus;
 	if (iDataMode || Busy()) {
 		User::RequestComplete(pStatus, KErrInUse);
@@ -893,6 +1025,28 @@ TBool CTlsConnection::OnCompletion(CStateMachine* aStateMachine)
 	LOG(Log::Printf(_L("CTlsConnection::OnCompletion()")));
 	if (aStateMachine == iSendData) {
 		iSendingData = EFalse;
+		if (iQueuedSendInFlight) {
+			TRequestStatus* q = iQueuedSendInFlight;
+			iQueuedSendInFlight = NULL;
+			User::RequestComplete(q, aStateMachine->LastError());
+		}
+		else if (iQueuedSendStatus && aStateMachine->LastError() == KErrNone) {
+			// start the Send that arrived during the deferred handshake; the state
+			// machine runs without a client status, we complete the queued one ourselves
+			TRequestStatus* first = aStateMachine->ClientStatus();
+			iSendData->SetClientStatus(NULL);
+			if (first) User::RequestComplete(first, KErrNone);
+			iQueuedSendInFlight = iQueuedSendStatus;
+			const TDesC8* d = iQueuedSendDesc;
+			iQueuedSendStatus = NULL;
+			iQueuedSendDesc = NULL;
+			LOG(Log::Printf(_L("  sending the queued Send")));
+			iSendingData = ETrue;
+			iSendEvent->SetUserData((TDesC8*) d);
+			iSendEvent->ResetCurrentPos();
+			iSendData->Start(NULL, this);
+			return EFalse;
+		}
 	} else if (aStateMachine == iRecvData) {
 		iReceivingData = EFalse;
 	} else if (aStateMachine == iHandshake) {
@@ -916,11 +1070,33 @@ TBool CTlsConnection::OnCompletion(CStateMachine* aStateMachine)
 
 				iSendData->Resume();
 				iRecvData->Resume();
+				if (iDeferredHandshake) {
+					iDeferredHandshake = EFalse;
+					if (iSendData->ClientStatus()) {
+						iSendingData = ETrue;
+						iSendEvent->ResetCurrentPos();
+						iSendData->Start(iSendData->ClientStatus(), this);
+					}
+				}
 			}
 		} else {
 			// handshake failed
 //			Reset();
 			iHandshaked = EFalse;
+			if (iDeferredHandshake) {
+				iDeferredHandshake = EFalse;
+				TRequestStatus* p = iSendData->ClientStatus();
+				if (p) {
+					iSendData->SetClientStatus(NULL);
+					User::RequestComplete(p, aStateMachine->LastError());
+				}
+				if (iQueuedSendStatus) {
+					TRequestStatus* q = iQueuedSendStatus;
+					iQueuedSendStatus = NULL;
+					iQueuedSendDesc = NULL;
+					User::RequestComplete(q, aStateMachine->LastError());
+				}
+			}
 		}
 	}
 	return EFalse;
@@ -948,8 +1124,36 @@ TBool CTlsConnection::SendData(const TDesC8& aDesc, TRequestStatus& aStatus)
 	}
 	LOG(Log::Printf(_L("CTlsConnection::Send(1)")));
 	if (!iHandshaked) {
+#ifndef EKA2
+		if (iDeferredHandshake && iHandshaking && iSendData->ClientStatus()) {
+			// the first Send is still waiting for the handshake: queue this one
+			if (iQueuedSendStatus) {
+				LOG(Log::Printf(_L("  Send while 2 already queued: KErrInUse")));
+				User::RequestComplete(pStatus, KErrInUse);
+				return EFalse;
+			}
+			LOG(Log::Printf(_L("  Send queued until the deferred handshake completes")));
+			aStatus = KRequestPending;
+			iQueuedSendDesc = &aDesc;
+			iQueuedSendStatus = &aStatus;
+			return EFalse;
+		}
+#endif
 		iSendData->SetUserData((TDesC8*) &aDesc);
 		iSendData->SetClientStatus(&aStatus);
+#ifndef EKA2
+		if (iDeferredHandshake && !iHandshaking) {
+			aStatus = KRequestPending;
+			char* host = HostFromHttpRequest(aDesc);
+			if (host) {
+				LOG(Log::Printf8(_L8("  SNI from HTTP Host header: %s"), host));
+				iMbedContext->SetHostname(host);
+			} else {
+				LOG(Log::Printf(_L("  no Host header in first Send, handshake without SNI")));
+			}
+			StartClientHandshakeStateMachine(NULL);
+		}
+#endif
 	} else {
 		iSendingData = ETrue;
 		iSendEvent->SetUserData((TDesC8*) &aDesc);
@@ -983,6 +1187,10 @@ TBool CTlsConnection::RecvData(TDes8& aDesc, TRequestStatus& aStatus)
 	}
 	iReceivingData = ETrue;
 	
+	// Recv/RecvOneOrMore replace the descriptor's contents (like RSocket does). Without
+	// this, a reused full buffer (Java reads in 512-byte chunks) leaves no room, the read
+	// returns 0 bytes and is reported as KErrEof ("Unexpected end of stream").
+	aDesc.Zero();
 	iRecvEvent->SetUserData(&aDesc);
 	iRecvEvent->SetUserMaxLength(aDesc.MaxLength());
 	

@@ -173,6 +173,14 @@ public:
 	TBool iHandshaking;
 	TBool iHandshaked;
 	TBool iDataMode;
+	// No host name at StartClientHandshake (Java HttpsConnection never sets
+	// KSoSSLDomainName): the handshake is postponed until the first Send, whose HTTP
+	// request carries a Host: header, which is then used for SNI.
+	TBool iDeferredHandshake;
+	// a second Send issued while the deferred handshake is still running
+	const TDesC8* iQueuedSendDesc;
+	TRequestStatus* iQueuedSendStatus;
+	TRequestStatus* iQueuedSendInFlight; // being sent now; completed by us, not the state machine
 	
 	TBool Busy();
 	

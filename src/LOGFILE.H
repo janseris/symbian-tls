@@ -20,6 +20,11 @@
 #include <flogger.h>
 #define __TRACEFILE__
 #endif
+// SSL_LOG: release build that logs to C:\Logs\SSL\SSLLog.txt with plain file I/O
+// (no flogger/comsdbgutil needed; nothing is written unless that folder exists).
+#if defined(SSL_LOG)
+#define __TRACEFILE__
+#endif
 
 //#ifndef __WINSCW__
 //#undef __TRACEFILE__
