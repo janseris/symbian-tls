@@ -738,7 +738,11 @@ CAsynchEvent* CHandshakeEvent::ProcessL(TRequestStatus& aStatus)
 		LOG(Log::Printf(_L("CHandshakeEvent::ProcessL() Err %x"), -res));
 	} else {
 #ifdef BEARSSL
+#ifdef EKA2
 		iBio.iTlsConnection.iServerCert = CX509Certificate::NewL(TPtrC8(stub_der, stub_der_len));
+#else
+		// TODO link with x509.dll on runtime
+#endif
 #else
 		TUint8* data = 0;
 		TInt len = iMbedContext.GetPeerCert(data);

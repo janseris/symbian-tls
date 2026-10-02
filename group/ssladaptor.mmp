@@ -9,7 +9,6 @@ SYSTEMINCLUDE \epoc32\include\libc
 SYSTEMINCLUDE ..\..\bearssl\inc
 
 LIBRARY estlib.lib
-LIBRARY x509.lib
 
 STATICLIBRARY bearssl.lib
 

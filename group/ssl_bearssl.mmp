@@ -4,6 +4,8 @@ TARGET ssl_bearssl.dll
 NOEXPORTLIBRARY
 SYSTEMINCLUDE /epoc32/include/bearssl
 SYSTEMINCLUDE /epoc32/include/libc
+
+LIBRARY x509.lib
 #else
 TARGET ssl.dll
 UID 0x1000183d 0x10001842
@@ -18,7 +20,6 @@ SYSTEMINCLUDE ..\..\bearssl\inc
 DEFFILE ssl.def
 
 LIBRARY estlib.lib
-LIBRARY x509.lib
 
 STATICLIBRARY bearssl.lib
 
