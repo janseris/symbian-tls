@@ -5,7 +5,7 @@
 
 #include "tlsevents.h"
 #include "mbedcontext.h"
-#include "LOGFILE.h"
+#include "LOGFILE.H"
 #include "tlsconnection.h"
 #include "stub_cert.h"
 

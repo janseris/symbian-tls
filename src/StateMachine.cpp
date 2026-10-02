@@ -19,8 +19,8 @@
  @file 
 */
 
-#include "AsynchEvent.h"
-#include "StateMachine.h"
+#include "asynchevent.h"
+#include "statemachine.h"
 
 
 #ifdef _DEBUG

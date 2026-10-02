@@ -6,7 +6,7 @@
 
 #ifndef EKA2
 #include "sslfactory.h"
-#include "logfile.h"
+#include "LOGFILE.H"
 
 EXPORT_C CSSLFactory* NewCSSLFactoryL() {
 	LOG(Log::Init());

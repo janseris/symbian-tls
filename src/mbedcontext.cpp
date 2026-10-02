@@ -3,7 +3,7 @@
  */
 
 #include "mbedcontext.h"
-#include "LOGFILE.h"
+#include "LOGFILE.H"
 #ifdef BEARSSL
 #include <stdlib.h>
 //#include "certs.h" // use `brssl -ta cacert.pem` to generate certificates
