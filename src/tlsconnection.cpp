@@ -578,6 +578,7 @@ void CTlsConnection::Recv(TDes8& aDesc, TRequestStatus & aStatus)
  */
 {
 	LOGD(Log::Printf(_L("CTlsConnection::Recv()")));
+	aDesc.Zero();
 	if (RecvData(aDesc, aStatus))
 		iRecvData->SetSockXfrLength(NULL);
 }
@@ -766,7 +767,7 @@ TInt CTlsConnection::SetOpt(TUint aOptionName,TUint aOptionLevel, const TDesC8& 
 	{
 		switch (aOptionName)
 		{
-		case KSoSSLDomainName:		
+		case 0x505 /*KSoSSLDomainName*/:		
 			{
 			if (iMbedContext) {
 				// text conversion

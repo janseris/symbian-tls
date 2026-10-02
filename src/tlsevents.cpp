@@ -747,9 +747,14 @@ CAsynchEvent* CHandshakeEvent::ProcessL(TRequestStatus& aStatus)
 	if (res != 0) {
 		ret = MapError(res, KErrSSLAlertHandshakeFailure);
 		LOG(Log::Printf(_L("CHandshakeEvent::ProcessL() Err %x"), -res));
-	}
-#if !defined BEARSSL
-	else {
+	} else {
+#ifdef BEARSSL
+#ifdef EKA2
+		iBio.iTlsConnection.iServerCert = CX509Certificate::NewL(TPtrC8(stub_der, stub_der_len));
+#else
+		// TODO link with x509.dll on runtime
+#endif
+#else
 		TUint8* data = 0;
 		TInt len = iMbedContext.GetPeerCert(data);
 		TBool supportedCert = EFalse;
@@ -788,8 +793,8 @@ CAsynchEvent* CHandshakeEvent::ProcessL(TRequestStatus& aStatus)
 		}
 #endif
 		if (data) User::Free(data);
-	}
 #endif
+	}
 	iHandshaked = ETrue;
 	User::RequestComplete(pStatus, ret);
 	return NULL;
