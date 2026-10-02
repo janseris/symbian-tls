@@ -540,7 +540,7 @@ void CTlsConnection::Recv(TDes8& aDesc, TRequestStatus & aStatus)
  */
 {
 	LOG(Log::Printf(_L("CTlsConnection::Recv()")));
-	aData.Zero();
+	aDesc.Zero();
 	if (RecvData(aDesc, aStatus))
 		iRecvData->SetSockXfrLength(NULL);
 }
