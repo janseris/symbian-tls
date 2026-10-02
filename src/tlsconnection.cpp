@@ -577,7 +577,7 @@ void CTlsConnection::Recv(TDes8& aDesc, TRequestStatus & aStatus)
  * more data is available for reading.
  */
 {
-	LOG(Log::Printf(_L("CTlsConnection::Recv()")));
+	LOGD(Log::Printf(_L("CTlsConnection::Recv()")));
 	if (RecvData(aDesc, aStatus))
 		iRecvData->SetSockXfrLength(NULL);
 }
@@ -596,7 +596,7 @@ void CTlsConnection::RecvOneOrMore(TDes8& aDesc, TRequestStatus& aStatus, TSockX
  * the same as the length of the returned aDesc.
  */
 {
-	LOG(Log::Printf(_L("CTlsConnection::RecvOneOrMore(): %d"), aDesc.MaxLength()));
+	LOGD(Log::Printf(_L("CTlsConnection::RecvOneOrMore(): %d"), aDesc.MaxLength()));
 	if (RecvData(aDesc, aStatus))
 		iRecvData->SetSockXfrLength(&aLen());
 }
@@ -1043,7 +1043,7 @@ void CTlsConnection::StartServerHandshake(TRequestStatus& aStatus)
 //MStateMachineNotify interface
 TBool CTlsConnection::OnCompletion(CStateMachine* aStateMachine)
 {
-	LOG(Log::Printf(_L("CTlsConnection::OnCompletion()")));
+	LOGD(Log::Printf(_L("CTlsConnection::OnCompletion()")));
 	if (aStateMachine == iSendData) {
 		iSendingData = EFalse;
 		if (iQueuedSendInFlight) {

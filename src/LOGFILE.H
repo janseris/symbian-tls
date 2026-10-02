@@ -36,6 +36,15 @@
 	#define LOG(a)
 #endif
 
+// LOGD: per-record / per-read lines of the data path. Writing a log line costs ~15 ms on
+// the Nokia 9300, so these made logged downloads crawl (~10 lines per 512-byte Java read).
+// Only in SSL_LOG_VERBOSE builds; normal log builds print a summary per connection instead.
+#if defined(__TRACEFILE__) && defined(SSL_LOG_VERBOSE)
+	#define LOGD(a) a
+#else
+	#define LOGD(a)
+#endif
+
 #ifdef __TRACEFILE__
 _LIT(KSSLLogFileName,"SSLLog.txt");
 _LIT(KSSLLogDir,"SSL");

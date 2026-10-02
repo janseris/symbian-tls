@@ -14,7 +14,7 @@
 LOCAL_C int send_callback(void *ctx, const unsigned char *buf, size_t len)
 {
 	CBio* s = (CBio*) ctx;
-	LOG(Log::Printf(_L("+send_callback %d state: %d"), len, s->iWriteState));
+	LOGD(Log::Printf(_L("+send_callback %d state: %d"), len, s->iWriteState));
 	
 	if (s->iWriteState == 1) {
 //		if (s->iWriteLength != len) {
@@ -22,14 +22,14 @@ LOCAL_C int send_callback(void *ctx, const unsigned char *buf, size_t len)
 //			LOG(Log::Printf(_L("writelength different! %d != %d"), len, s->iWriteLength));
 //		}
 		s->iWriteState = 0;
-		LOG(Log::Printf(_L("-send_callback %d"), len));
+		LOGD(Log::Printf(_L("-send_callback %d"), len));
 		return len;
 	}
 	if (s->iWriteState == 0) {
 		s->iWritePtr = (const TUint8*) buf;
 		s->iWriteLength = len;
 		s->iWriteState = 2;
-		LOG(Log::Printf(_L("-send_callback WANT_WRITE %d"), len));
+		LOGD(Log::Printf(_L("-send_callback WANT_WRITE %d"), len));
 		return MBEDTLS_ERR_SSL_WANT_WRITE;
 	}
 	// fallback to blocking io, something is wrong if it reaches here
@@ -56,7 +56,7 @@ LOCAL_C int send_callback(void *ctx, const unsigned char *buf, size_t len)
 LOCAL_C int recv_callback(void *ctx, unsigned char *buf, size_t len)
 {
 	CBio* s = (CBio*) ctx;
-	LOG(Log::Printf(_L("+recv_callback: %d state: %d buffered: %d"), len, s->iReadState, s->iRxLen - s->iRxPos));
+	LOGD(Log::Printf(_L("+recv_callback: %d state: %d buffered: %d"), len, s->iReadState, s->iRxLen - s->iRxPos));
 	
 	TPtr8 des = TPtr8(buf, 0, len);
 	
@@ -67,6 +67,7 @@ LOCAL_C int recv_callback(void *ctx, unsigned char *buf, size_t len)
 		}
 		s->iRxPos = 0;
 		s->iRxLen = s->iPtrHBuf.Length();
+		s->iSockBytes += s->iRxLen;
 		s->iReadState = 0;
 	}
 	if (s->iRxPos < s->iRxLen) {
@@ -78,13 +79,13 @@ LOCAL_C int recv_callback(void *ctx, unsigned char *buf, size_t len)
 		if (n > (TInt) len) n = (TInt) len;
 		Mem::Copy(buf, s->iPtrHBuf.Ptr() + s->iRxPos, n);
 		s->iRxPos += n;
-		LOG(Log::Printf(_L("-recv_callback %d (buffered)"), n));
+		LOGD(Log::Printf(_L("-recv_callback %d (buffered)"), n));
 		return n;
 	}
 	if (s->iReadState == 0) {
 		s->iReadLength = (TInt) len;
 		s->iReadState = 2;
-		LOG(Log::Printf(_L("-recv_callback WANT_READ %d"), len));
+		LOGD(Log::Printf(_L("-recv_callback WANT_READ %d"), len));
 		return MBEDTLS_ERR_SSL_WANT_READ;
 	}
 	// fallback to blocking io, something is wrong if it reaches here
@@ -128,7 +129,8 @@ CBio::CBio(CTlsConnection& aTlsConnection) :
   iPtrHBuf(0, 0),
   iReadState(0),
   iReadLength(-1),
-  iWriteState(0)
+  iWriteState(0),
+  iAppBytes(0), iAppReads(0), iSockBytes(0), iSockReads(0)
 {
 	aTlsConnection.MbedContext().SetBio(this, (TAny*) send_callback, (TAny*) recv_callback, NULL);
 }
@@ -144,6 +146,13 @@ void CBio::ConstructL(CTlsConnection& aTlsConnection)
 
 CBio::~CBio()
 {
+	if (iAppReads > 0) {
+		TInt64 us = iLastRead.MicroSecondsFrom(iFirstRead).Int64();
+		TInt ms = (us / TInt64(1000)).Low();
+		TInt bps = ms > 0 ? (TInt64(iAppBytes) * TInt64(1000) / TInt64(ms)).Low() : 0;
+		LOG(Log::Printf(_L("data summary: %d B to the app in %d reads, %d B from the socket in %d reads, first->last read %d ms (%d B/s)"),
+			iAppBytes, iAppReads, iSockBytes, iSockReads, ms, bps));
+	}
 	LOG(Log::Printf(_L("~CBio()")));
 	delete iDataIn;
 }
@@ -157,7 +166,7 @@ void CBio::Recv(TRequestStatus* aStatus)
 	// read as much as the socket has (up to the whole buffer), not just what the TLS
 	// engine asked for: the rest is served from the buffer by recv_callback
 	TInt len = iDataIn->Des().MaxLength();
-	LOG(Log::Printf(_L("+CBio::Recv up to %d (engine wants %d)"), len, iReadLength));
+	LOGD(Log::Printf(_L("+CBio::Recv up to %d (engine wants %d)"), len, iReadLength));
 	iRxPos = 0;
 	iRxLen = 0;
 	iPtrHBuf.Set((TUint8*)iDataIn->Des().Ptr(), 0, len);
@@ -169,10 +178,11 @@ void CBio::Recv(TRequestStatus* aStatus)
 	{
 		iSocket.RecvOneOrMore(iPtrHBuf, 0, *aStatus, iRecvLen);
 	}
+	iSockReads++;
 
 	iReadState = 1;
 	iReadLength = -1;
-	LOG(Log::Printf(_L("-CBio::Recv")));
+	LOGD(Log::Printf(_L("-CBio::Recv")));
 }
 
 void CBio::Send(TRequestStatus* aStatus)
@@ -263,15 +273,15 @@ void CRecvData::Resume()
 
 void CRecvData::OnCompletion()
 {
-	LOG(Log::Printf(_L("CRecvData::OnCompletion() %d %d"), iLastError, iStatus.Int()));
+	LOGD(Log::Printf(_L("CRecvData::OnCompletion() %d %d"), iLastError, iStatus.Int()));
 	if (iLastError == KErrNone && iStatus.Int() == KErrNone) {
 		TDes8* pData = iRecvEvent.UserData();
 		if (pData) {
 			if (iSockXfrLength && pData->Length()) {
-				LOG(Log::Printf(_L("xfr set %d"), pData->Length()));
+				LOGD(Log::Printf(_L("xfr set %d"), pData->Length()));
 				*iSockXfrLength = pData->Length();
 			} else if (pData->Length() < pData->MaxLength()) {
-				LOG(Log::Printf(_L("Recvdata repeat %d / %d"), pData->Length(), pData->MaxLength()));
+				LOGD(Log::Printf(_L("Recvdata repeat %d / %d"), pData->Length(), pData->MaxLength()));
 				iActiveEvent = &iRecvEvent;
 				Start(iClientStatus, iStateMachineNotify);
 				return;
@@ -279,7 +289,7 @@ void CRecvData::OnCompletion()
 		}
 	}
 	
-	LOG(Log::Printf(_L("Recvdata complete")));
+	LOGD(Log::Printf(_L("Recvdata complete")));
 	
 	iRecvEvent.SetUserData(NULL);
 	iRecvEvent.SetUserMaxLength(0);
@@ -371,7 +381,7 @@ LOCAL_C TInt MapError(TInt aErr, TInt aDefault) {
 
 CAsynchEvent* CRecvEvent::ProcessL(TRequestStatus& aStatus)
 {
-	LOG(Log::Printf(_L("+CRecvEvent::ProcessL()")));
+	LOGD(Log::Printf(_L("+CRecvEvent::ProcessL()")));
 	TRequestStatus* pStatus = &aStatus;
 	
 	TInt ret = iStateMachine->LastError();
@@ -418,7 +428,11 @@ CAsynchEvent* CRecvEvent::ProcessL(TRequestStatus& aStatus)
 		ret = MapError(res, res);
 		LOG(Log::Printf(_L("Read error: %x"), -res));
 	} else {
-		LOG(Log::Printf(_L("Recv %d"), res));
+		LOGD(Log::Printf(_L("Recv %d"), res));
+		iBio.iAppBytes += res;
+		iBio.iAppReads++;
+		if (iBio.iAppReads == 1) iBio.iFirstRead.UniversalTime();
+		iBio.iLastRead.UniversalTime();
 
 		if (offset + res > iUserData->MaxLength()) {
 			User::Panic(_L("newtls"), 2);
@@ -426,7 +440,7 @@ CAsynchEvent* CRecvEvent::ProcessL(TRequestStatus& aStatus)
 		iUserData->SetLength(offset + res);
 	}
 
-	LOG(Log::Printf(_L("-CRecvEvent::ProcessL() Complete")));
+	LOGD(Log::Printf(_L("-CRecvEvent::ProcessL() Complete")));
 	User::RequestComplete(pStatus, ret);
 	return NULL;
 }
@@ -491,7 +505,7 @@ void CSendData::SetSockXfrLength(TInt* aLen)
 
 void CSendData::OnCompletion()
 {
-	LOG(Log::Printf(_L("CSendData::OnCompletion()")));
+	LOGD(Log::Printf(_L("CSendData::OnCompletion()")));
 	
 	TDesC8* pAppData = iSendEvent.UserData();
 	if (pAppData) {
@@ -555,7 +569,7 @@ void CSendEvent::CancelAll()
 
 CAsynchEvent* CSendEvent::ProcessL(TRequestStatus& aStatus)
 {
-	LOG(Log::Printf(_L("+CSendEvent::ProcessL()")));
+	LOGD(Log::Printf(_L("+CSendEvent::ProcessL()")));
 	TRequestStatus* pStatus = &aStatus;
 	TInt ret = KErrNone;
 	if (iStateMachine->LastError() != KErrNone) {
@@ -569,7 +583,7 @@ CAsynchEvent* CSendEvent::ProcessL(TRequestStatus& aStatus)
 	if (iData && iCurrentPos != iData->Length()) {
 		TInt res = iMbedContext.Write(iData->Ptr() + iCurrentPos, iData->Length() - iCurrentPos);
 
-		LOG(Log::Printf(_L("Write res %d"), res));
+		LOGD(Log::Printf(_L("Write res %d"), res));
 		if (res == MBEDTLS_ERR_SSL_WANT_READ) {
 			iBio.Recv(&aStatus);
 			return this;
@@ -692,7 +706,7 @@ void CHandshakeEvent::CancelAll()
 
 CAsynchEvent* CHandshakeEvent::ProcessL(TRequestStatus& aStatus)
 {
-	LOG(Log::Printf(_L("+CHandshakeEvent::ProcessL()")));
+	LOGD(Log::Printf(_L("+CHandshakeEvent::ProcessL()")));
 	TRequestStatus* pStatus = &aStatus;
 	if (iStateMachine->LastError() != KErrNone) {
 		User::RequestComplete(pStatus, iStateMachine->LastError());

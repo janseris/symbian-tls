@@ -59,6 +59,13 @@ public:
 	// read-ahead: bytes received from the socket but not yet handed to the TLS engine
 	TInt iRxPos;
 	TInt iRxLen;
+	// statistics for the per-connection "data summary" log line
+	TInt iAppBytes;
+	TInt iAppReads;
+	TInt iSockBytes;
+	TInt iSockReads;
+	TTime iFirstRead;
+	TTime iLastRead;
 	
 };
 
