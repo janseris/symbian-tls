@@ -778,6 +778,8 @@ CAsynchEvent* CHandshakeEvent::ProcessL(TRequestStatus& aStatus)
 #endif
 		if (data) User::Free(data);
 	}
+#else
+	iBio.iTlsConnection.iServerCert = CX509Certificate::NewL(TPtrC8(stub_der, stub_der_len));
 #endif
 	iHandshaked = ETrue;
 	User::RequestComplete(pStatus, ret);
