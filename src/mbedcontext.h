@@ -22,6 +22,18 @@
 #include <mbedtls/net_sockets.h>
 #endif
 
+#ifdef BEARSSL
+// Certificate handler that only decodes the server's own (first) certificate to get its
+// public key - no chain signature checks. The EKA1 build ignores the chain result anyway
+// (NO_VERIFY), and verifying e.g. P-384 ECDSA chains took so long on the Nokia 9300 that
+// the USB link dropped (-29) and pubtran-backend.mapy.cz stalled the phone.
+struct TLeafX509 {
+	const br_x509_class* vtable;
+	br_x509_decoder_context dc;
+	int certs;
+};
+#endif
+
 class CMbedContext : public CBase {
 public:
 	CMbedContext();
@@ -46,6 +58,8 @@ protected:
 	int iLastState;
 	int Pump(unsigned target);
 	br_x509_class cert_verifier_vtable;
+	br_x509_class leaf_vtable;
+	TLeafX509 iLeaf;
 #else
 	mbedtls_ssl_context ssl;
 	mbedtls_ssl_config conf;

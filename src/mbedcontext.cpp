@@ -110,6 +110,37 @@ static const br_x509_pkey* x509_get_pkey(const br_x509_class*const* ctx, unsigne
 	return br_x509_minimal_vtable.get_pkey(ctx, usages);
 }
 
+static void leaf_start_chain(const br_x509_class** ctx, const char* server_name) {
+	((TLeafX509*) ctx)->certs = 0;
+}
+
+static void leaf_start_cert(const br_x509_class** ctx, uint32_t length) {
+	TLeafX509* l = (TLeafX509*) ctx;
+	if (l->certs == 0) br_x509_decoder_init(&l->dc, NULL, NULL);
+}
+
+static void leaf_append(const br_x509_class** ctx, const unsigned char* buf, size_t len) {
+	TLeafX509* l = (TLeafX509*) ctx;
+	if (l->certs == 0) br_x509_decoder_push(&l->dc, buf, len);
+}
+
+static void leaf_end_cert(const br_x509_class** ctx) {
+	((TLeafX509*) ctx)->certs++;
+}
+
+static unsigned leaf_end_chain(const br_x509_class** ctx) {
+	TLeafX509* l = (TLeafX509*) ctx;
+	LOG(Log::Printf(_L("certificates: %d in chain, leaf decoded (err %d), chain not verified"),
+		l->certs, br_x509_decoder_last_error(&l->dc)));
+	return l->certs > 0 ? (unsigned) br_x509_decoder_last_error(&l->dc) : BR_ERR_X509_EMPTY_CHAIN;
+}
+
+static const br_x509_pkey* leaf_get_pkey(const br_x509_class*const* ctx, unsigned* usages) {
+	TLeafX509* l = (TLeafX509*) ctx;
+	if (usages) *usages = BR_KEYTYPE_KEYX | BR_KEYTYPE_SIGN;
+	return br_x509_decoder_get_pkey(&l->dc);
+}
+
 static int ssl_time_check_callback(void* ctx,
 	uint32_t not_before_days, uint32_t not_before_secs,
 	uint32_t not_after_days,  uint32_t not_after_secs) 
@@ -227,6 +258,16 @@ CMbedContext::CMbedContext()
 	cert_verifier_vtable.end_cert = x509_end_cert;
 	cert_verifier_vtable.end_chain = x509_end_chain;
 	cert_verifier_vtable.get_pkey = x509_get_pkey;
+
+	leaf_vtable.context_size = sizeof(TLeafX509);
+	leaf_vtable.start_chain = leaf_start_chain;
+	leaf_vtable.start_cert = leaf_start_cert;
+	leaf_vtable.append = leaf_append;
+	leaf_vtable.end_cert = leaf_end_cert;
+	leaf_vtable.end_chain = leaf_end_chain;
+	leaf_vtable.get_pkey = leaf_get_pkey;
+	iLeaf.vtable = &leaf_vtable;
+	iLeaf.certs = 0;
 	
 	br_ssl_engine_set_buffer(&sc.eng, iobuf, sizeof(iobuf), 1);
 #else
@@ -360,7 +401,7 @@ TInt CMbedContext::Handshake()
 		} else {
 			br_ssl_client_reset(&sc, hostname, 0);
 		}
-		xc.vtable = &cert_verifier_vtable;
+		br_ssl_engine_set_x509(&sc.eng, &iLeaf.vtable);
 		iResetDone = true;
 	}
 	
