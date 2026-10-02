@@ -6,6 +6,7 @@
 #include "LOGFILE.H"
 #ifdef BEARSSL
 #include <stdlib.h>
+#include <string.h>
 //#include "certs.h" // use `brssl -ta cacert.pem` to generate certificates
 
 static TInt get_last_bearssl_error(br_ssl_engine_context* eng) {
@@ -130,12 +131,92 @@ static void my_debug(void *ctx, int level,
 #endif
 #endif
 
+#ifdef BEARSSL
+#include <f32file.h>
+_LIT(KSessionFile, "C:\\System\\Data\\ssl_sessions.dat");
+const TInt KMaxSessions = 8;
+const TInt KHostMax = 64;
+struct TSessionRecord {
+	char host[KHostMax];
+	br_ssl_session_parameters params;
+};
+
+// Reads all records (at most KMaxSessions) into aRecs; returns how many.
+static TInt ReadSessions(RFs& aFs, TSessionRecord* aRecs)
+{
+	RFile f;
+	if (f.Open(aFs, KSessionFile, EFileRead | EFileShareAny) != KErrNone) return 0;
+	TInt n = 0;
+	TPtr8 p((TUint8*) aRecs, 0, sizeof(TSessionRecord) * KMaxSessions);
+	if (f.Read(p) == KErrNone) n = p.Length() / sizeof(TSessionRecord);
+	f.Close();
+	return n;
+}
+
+static TBool LoadSession(const char* aHost, br_ssl_session_parameters* aOut)
+{
+	if (!aHost) return EFalse;
+	RFs fs;
+	if (fs.Connect() != KErrNone) return EFalse;
+	TSessionRecord* recs = new TSessionRecord[KMaxSessions];
+	TBool found = EFalse;
+	if (recs) {
+		TInt n = ReadSessions(fs, recs);
+		for (TInt i = 0; i < n && !found; i++) {
+			if (strncmp(recs[i].host, aHost, KHostMax) == 0) {
+				*aOut = recs[i].params;
+				found = ETrue;
+			}
+		}
+		delete[] recs;
+	}
+	fs.Close();
+	return found;
+}
+
+static void SaveSession(const char* aHost, const br_ssl_session_parameters* aParams)
+{
+	if (!aHost || strlen(aHost) >= (size_t) KHostMax) return;
+	RFs fs;
+	if (fs.Connect() != KErrNone) return;
+	TSessionRecord* recs = new TSessionRecord[KMaxSessions];
+	if (recs) {
+		TInt n = ReadSessions(fs, recs);
+		TInt i;
+		for (i = 0; i < n; i++) {
+			if (strncmp(recs[i].host, aHost, KHostMax) == 0) break;
+		}
+		if (i == n) {
+			if (n == KMaxSessions) { // drop the oldest
+				Mem::Move(&recs[0], &recs[1], sizeof(TSessionRecord) * (KMaxSessions - 1));
+				i = KMaxSessions - 1;
+			} else {
+				n++;
+			}
+		}
+		Mem::FillZ(recs[i].host, KHostMax);
+		Mem::Copy(recs[i].host, aHost, strlen(aHost));
+		recs[i].params = *aParams;
+		RFile f;
+		if (f.Replace(fs, KSessionFile, EFileWrite | EFileShareAny) == KErrNone) {
+			f.Write(TPtrC8((TUint8*) recs, sizeof(TSessionRecord) * n));
+			f.Close();
+		}
+		delete[] recs;
+	}
+	fs.Close();
+}
+#endif
+
 CMbedContext::CMbedContext()
 {
 #ifdef BEARSSL
 	//br_ssl_client_init_full(&sc, &xc, TAs, TAs_NUM); // uncomment if you include certs.h
 	br_ssl_client_init_full(&sc, &xc, NULL, 0);
 	iResetDone = false;
+	iSessionOffered = false;
+	iSessionHandled = false;
+	iOfferedIdLen = 0;
 
 	br_x509_minimal_set_time_callback(&xc, NULL, ssl_time_check_callback);
 	
@@ -268,7 +349,17 @@ TInt CMbedContext::Handshake()
 {
 #ifdef BEARSSL
 	if (!iResetDone) {
-		br_ssl_client_reset(&sc, hostname, 0);
+		br_ssl_session_parameters sp;
+		if (hostname && LoadSession(hostname, &sp) && sp.session_id_len > 0) {
+			br_ssl_engine_set_session_parameters(&sc.eng, &sp);
+			Mem::Copy(iOfferedId, sp.session_id, sp.session_id_len);
+			iOfferedIdLen = sp.session_id_len;
+			iSessionOffered = true;
+			LOG(Log::Printf(_L("offering saved TLS session (%d byte id)"), sp.session_id_len));
+			br_ssl_client_reset(&sc, hostname, 1);
+		} else {
+			br_ssl_client_reset(&sc, hostname, 0);
+		}
 		xc.vtable = &cert_verifier_vtable;
 		iResetDone = true;
 	}
@@ -281,6 +372,18 @@ TInt CMbedContext::Handshake()
 		return get_last_bearssl_error(&sc.eng);
 	}
 	if ((state & BR_SSL_SENDAPP) || (state & BR_SSL_RECVAPP)) {
+		if (!iSessionHandled) {
+			iSessionHandled = true;
+			br_ssl_session_parameters sp;
+			br_ssl_engine_get_session_parameters(&sc.eng, &sp);
+			TBool resumed = iSessionOffered && sp.session_id_len == iOfferedIdLen
+				&& Mem::Compare(sp.session_id, sp.session_id_len, iOfferedId, iOfferedIdLen) == 0;
+			LOG(Log::Printf(_L("handshake done: %s, cipher %04x, session id %d bytes"),
+				resumed ? _S("RESUMED session") : _S("full handshake"), sp.cipher_suite, sp.session_id_len));
+			if (!resumed && sp.session_id_len > 0 && hostname) {
+				SaveSession(hostname, &sp);
+			}
+		}
 		return 0;
 	}
 	if (r < 0) return r;

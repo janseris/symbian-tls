@@ -33,28 +33,64 @@ _LIT(KSSLLogPath, "C:\\Logs\\SSL\\SSLLog.txt");
 // Appends one line "hh:mm:ss.mmm [thread] text" to C:\Logs\SSL\SSLLog.txt.
 // The file is opened and closed for every line, so it survives a crash or a frozen phone,
 // and several processes (browser, Java) can log at the same time.
+struct TSslLogFile {
+	RFs fs;
+	RFile f;
+	TInt lines;
+};
+
+// One open file per thread (kept in the DLL's thread-local storage): opening and closing
+// the file for every line made each log line cost tens of milliseconds and slowed the
+// whole TLS stack down. Closed in Log::Close (when the DLL is unloaded).
+static TSslLogFile* SslLogFile()
+{
+	TSslLogFile* lf = (TSslLogFile*) Dll::Tls();
+	if (lf) return lf;
+	lf = new TSslLogFile;
+	if (!lf) return NULL;
+	if (lf->fs.Connect() != KErrNone) {
+		delete lf;
+		return NULL;
+	}
+	TInt r = lf->f.Open(lf->fs, KSSLLogPath, EFileWrite | EFileShareAny);
+	if (r == KErrNotFound) r = lf->f.Create(lf->fs, KSSLLogPath, EFileWrite | EFileShareAny);
+	if (r != KErrNone) { // e.g. C:\Logs\SSL doesn't exist: no logging
+		lf->fs.Close();
+		delete lf;
+		return NULL;
+	}
+	lf->lines = 0;
+	Dll::SetTls(lf);
+	return lf;
+}
+
 static void SslLogAppend(const TDesC8& aLine)
 {
-	RFs fs;
-	if (fs.Connect() != KErrNone) return;
-	RFile f;
-	TInt r = f.Open(fs, KSSLLogPath, EFileWrite | EFileShareAny);
-	if (r == KErrNotFound) r = f.Create(fs, KSSLLogPath, EFileWrite | EFileShareAny);
-	if (r == KErrNone) {
-		TInt pos = 0;
-		f.Seek(ESeekEnd, pos);
-		TBuf8<64> pre;
-		TTime now;
-		now.HomeTime();
-		TDateTime dt = now.DateTime();
-		pre.Format(_L8("%02d:%02d:%02d.%03d [%x] "), dt.Hour(), dt.Minute(), dt.Second(),
-			dt.MicroSecond() / 1000, (TUint) RThread().Id());
-		f.Write(pre);
-		f.Write(aLine);
-		f.Write(_L8("\r\n"));
-		f.Close();
-	}
-	fs.Close();
+	TSslLogFile* lf = SslLogFile();
+	if (!lf) return;
+	TBuf8<64> pre;
+	TTime now;
+	now.HomeTime();
+	TDateTime dt = now.DateTime();
+	pre.Format(_L8("%02d:%02d:%02d.%03d [%x] "), dt.Hour(), dt.Minute(), dt.Second(),
+		dt.MicroSecond() / 1000, (TUint) RThread().Id());
+	TInt pos = 0;
+	lf->f.Seek(ESeekEnd, pos); // other threads (browser, Java) append to the same file
+	lf->f.Write(pre);
+	lf->f.Write(aLine);
+	lf->f.Write(_L8("\r\n"));
+	if (++lf->lines % 16 == 0) lf->f.Flush();
+}
+
+static void SslLogClose()
+{
+	TSslLogFile* lf = (TSslLogFile*) Dll::Tls();
+	if (!lf) return;
+	lf->f.Flush();
+	lf->f.Close();
+	lf->fs.Close();
+	delete lf;
+	Dll::SetTls(NULL);
 }
 #endif
 
@@ -98,6 +134,9 @@ void Log::Init()
 
 void Log::Close()
 {
+#ifdef SSL_LOG
+	SslLogClose();
+#endif
 #ifdef DYNAMIC
 	LogGlobal* global = (LogGlobal*)Dll::Tls();
 	if (global) {

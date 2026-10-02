@@ -34,6 +34,15 @@ protected:
 	unsigned char iobuf[BR_SSL_BUFSIZE_BIDI];
 	br_sslio_context ioc;
 	bool iResetDone;
+#ifdef BEARSSL
+	// TLS session resumption across connections (EKA1): the session of each host is
+	// kept in C:\System\Data\ssl_sessions.dat, because the DLL is unloaded after
+	// every connection. A resumed handshake skips the slow RSA/ECDHE maths.
+	bool iSessionOffered;
+	bool iSessionHandled;
+	unsigned char iOfferedId[32];
+	unsigned char iOfferedIdLen;
+#endif
 	int iLastState;
 	int Pump(unsigned target);
 	br_x509_class cert_verifier_vtable;
