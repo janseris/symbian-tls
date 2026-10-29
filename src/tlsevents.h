@@ -298,6 +298,7 @@ protected:
 #endif
 	TBool iInDialog;
 	TBool iHandshaked;
+	TBool iPortSet;
 };
 
 inline void CHandshakeEvent::Set(CStateMachine* aStateMachine)

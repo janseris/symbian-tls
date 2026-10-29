@@ -150,6 +150,10 @@ public:
 	TDialogMode			iDialogMode;
 	CX509Certificate* iClientCert;
 	CX509Certificate* iServerCert;
+#ifndef EKA2
+	RLibrary iX509Lib;          // x509.dll, while iServerCert (made by it) exists (fix11)
+	TBool iX509Loaded;
+#endif
 #ifdef USE_GENERIC_SOCKET
 	MGenericSecureSocket* iGenericSocket;
 	TBool iIsGenericSocket;

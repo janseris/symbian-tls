@@ -167,6 +167,38 @@ static void my_debug(void *ctx, int level,
 _LIT(KSessionFile, "C:\\System\\Data\\ssl_sessions.dat");
 const TInt KMaxSessions = 8;
 const TInt KHostMax = 64;
+// Several threads or apps may handshake at the same time (the map app runs 3 download threads):
+// the file's read-modify-write is done under a global mutex, or one thread's save could overwrite
+// another's and resumption would quietly fail. (fix11, as upstream's session storage does)
+_LIT(KSessionMutex, "SslAdaptorSessions");
+
+class TSessionLock
+	{
+public:
+	TSessionLock() : iOk(EFalse)
+		{
+		TInt err = iMutex.CreateGlobal(KSessionMutex);
+		if (err == KErrAlreadyExists) err = iMutex.OpenGlobal(KSessionMutex);
+		if (err == KErrNone) { iMutex.Wait(); iOk = ETrue; }
+		}
+	~TSessionLock() { if (iOk) { iMutex.Signal(); iMutex.Close(); } }
+private:
+	RMutex iMutex;
+	TBool iOk;
+	};
+
+// The store's key: "host:port" (so two services on one host don't take each other's sessions).
+static TBool SessionKey(const char* aHost, TUint aPort, char* aKey)
+{
+	if (!aHost) return EFalse;
+	size_t n = strlen(aHost);
+	if (n + 7 >= (size_t) KHostMax) return EFalse;
+	Mem::FillZ(aKey, KHostMax);
+	Mem::Copy(aKey, aHost, n);
+	TPtr8 p((TUint8*) aKey + n, 0, KHostMax - n - 1);
+	p.Format(_L8(":%u"), aPort);
+	return ETrue;
+}
 struct TSessionRecord {
 	char host[KHostMax];
 	br_ssl_session_parameters params;
@@ -187,6 +219,7 @@ static TInt ReadSessions(RFs& aFs, TSessionRecord* aRecs)
 static TBool LoadSession(const char* aHost, br_ssl_session_parameters* aOut)
 {
 	if (!aHost) return EFalse;
+	TSessionLock lock;
 	RFs fs;
 	if (fs.Connect() != KErrNone) return EFalse;
 	TSessionRecord* recs = new TSessionRecord[KMaxSessions];
@@ -208,6 +241,7 @@ static TBool LoadSession(const char* aHost, br_ssl_session_parameters* aOut)
 static void SaveSession(const char* aHost, const br_ssl_session_parameters* aParams)
 {
 	if (!aHost || strlen(aHost) >= (size_t) KHostMax) return;
+	TSessionLock lock;
 	RFs fs;
 	if (fs.Connect() != KErrNone) return;
 	TSessionRecord* recs = new TSessionRecord[KMaxSessions];
@@ -245,6 +279,8 @@ CMbedContext::CMbedContext()
 	//br_ssl_client_init_full(&sc, &xc, TAs, TAs_NUM); // uncomment if you include certs.h
 	br_ssl_client_init_full(&sc, &xc, NULL, 0);
 	iResetDone = false;
+	iPort = 0;
+	iFlushSession = false;
 	iSessionOffered = false;
 	iSessionHandled = false;
 	iOfferedIdLen = 0;
@@ -391,7 +427,9 @@ TInt CMbedContext::Handshake()
 #ifdef BEARSSL
 	if (!iResetDone) {
 		br_ssl_session_parameters sp;
-		if (hostname && LoadSession(hostname, &sp) && sp.session_id_len > 0) {
+		char key[KHostMax];
+		TBool haveKey = SessionKey(hostname, iPort, key);
+		if (!iFlushSession && haveKey && LoadSession(key, &sp) && sp.session_id_len > 0) {
 			br_ssl_engine_set_session_parameters(&sc.eng, &sp);
 			Mem::Copy(iOfferedId, sp.session_id, sp.session_id_len);
 			iOfferedIdLen = sp.session_id_len;
@@ -421,9 +459,11 @@ TInt CMbedContext::Handshake()
 				&& Mem::Compare(sp.session_id, sp.session_id_len, iOfferedId, iOfferedIdLen) == 0;
 			LOG(Log::Printf(_L("handshake done: %s, cipher %04x, session id %d bytes"),
 				resumed ? _S("RESUMED session") : _S("full handshake"), sp.cipher_suite, sp.session_id_len));
-			if (!resumed && sp.session_id_len > 0 && hostname) {
-				SaveSession(hostname, &sp);
+			char key[KHostMax];
+			if (!resumed && sp.session_id_len > 0 && SessionKey(hostname, iPort, key)) {
+				SaveSession(key, &sp);
 			}
+			iFlushSession = false;
 		}
 		return 0;
 	}

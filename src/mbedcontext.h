@@ -54,6 +54,9 @@ protected:
 	bool iSessionHandled;
 	unsigned char iOfferedId[32];
 	unsigned char iOfferedIdLen;
+	// the server's port (sessions are kept per host and port) and FlushSessionCache's wish
+	TUint iPort;
+	bool iFlushSession;
 #endif
 	int iLastState;
 	int Pump(unsigned target);
@@ -77,6 +80,11 @@ public:
 
 	// mbedtls_ssl_set_hostname
 	void SetHostname(const char* aHostname);
+#ifdef BEARSSL
+	// the session store's key is host:port; FlushSession: don't offer a saved session next time
+	void SetPort(TUint aPort) { iPort = aPort; }
+	void FlushSession() { iFlushSession = true; }
+#endif
 	
 	// mbedtls_ssl_handshake
 	TInt Handshake();

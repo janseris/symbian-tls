@@ -697,6 +697,10 @@ CHandshakeEvent::~CHandshakeEvent()
 
 void CHandshakeEvent::CancelAll()
 {
+	// a cancelled handshake starts again from the beginning (fix11, as upstream)
+	iInDialog = EFalse;
+	iHandshaked = EFalse;
+	iPortSet = EFalse;
 #ifndef NO_VERIFY
 	if (iSecurityDialog) {
 		iSecurityDialog->Cancel();
@@ -726,6 +730,15 @@ CAsynchEvent* CHandshakeEvent::ProcessL(TRequestStatus& aStatus)
 //		iBio.Recv(&aStatus);
 //		return this;
 //	}
+#ifdef BEARSSL
+	if (!iPortSet) {
+		// the session store's key is host:port (fix11)
+		iPortSet = ETrue;
+		TSockAddr addr;
+		iBio.iSocket.RemoteName(addr);
+		iMbedContext.SetPort(addr.Port());
+	}
+#endif
 	TInt res = iHandshaked ? iMbedContext.Renegotiate() : iMbedContext.Handshake();
 	if (res == MBEDTLS_ERR_SSL_WANT_READ) {
 		iBio.Recv(&aStatus);
@@ -752,7 +765,27 @@ CAsynchEvent* CHandshakeEvent::ProcessL(TRequestStatus& aStatus)
 #ifdef EKA2
 		iBio.iTlsConnection.iServerCert = CX509Certificate::NewL(TPtrC8(stub_der, stub_der_len));
 #else
-		// TODO link with x509.dll on runtime
+		// a placeholder certificate, so ServerCert() isn't NULL (Java's SecurityInfo asks for it):
+		// x509.dll is linked at run time (the EKA1 SDKs have no x509.lib); ordinal 126 is
+		// CX509Certificate::NewL(const TDesC8&) in the S80v2 SDK (fix11, from upstream). Unlike
+		// upstream, the library stays loaded while the connection has the certificate: the
+		// certificate's code is in it, so deleting it after an unload would crash.
+		if (!iBio.iTlsConnection.iServerCert && iBio.iTlsConnection.iX509Lib.Load(_L("x509.dll")) == KErrNone) {
+			typedef CX509Certificate* (*TNewL)(const TDesC8&);
+			TNewL newL = (TNewL) iBio.iTlsConnection.iX509Lib.Lookup(
+#ifdef __WINS__
+				83
+#else
+				126
+#endif
+				);
+			if (newL) {
+				TRAPD(certErr, iBio.iTlsConnection.iServerCert = newL(TPtrC8(stub_der, stub_der_len)));
+				(void) certErr;
+			}
+			if (!iBio.iTlsConnection.iServerCert) iBio.iTlsConnection.iX509Lib.Close();
+			else iBio.iTlsConnection.iX509Loaded = ETrue;
+		}
 #endif
 #else
 		TUint8* data = 0;

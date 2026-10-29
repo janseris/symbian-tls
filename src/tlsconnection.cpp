@@ -168,6 +168,12 @@ CTlsConnection::~CTlsConnection()
 		delete iServerCert;
 		iServerCert = NULL;
 	}
+#ifndef EKA2
+	if (iX509Loaded) {
+		iX509Lib.Close();
+		iX509Loaded = EFalse;
+	}
+#endif
 	if (iMbedContext) {
 		delete iMbedContext;
 		iMbedContext = NULL;
@@ -506,6 +512,10 @@ void CTlsConnection::FlushSessionCache()
 {
 	// TODO session cache
 	LOG(Log::Printf(_L("CTlsConnection::FlushSessionCache()")));
+#ifdef BEARSSL
+	// don't offer the saved session in the next handshake (fix11)
+	if (iMbedContext) iMbedContext->FlushSession();
+#endif
 }
 
 TInt CTlsConnection::GetOpt(TUint aOptionName,TUint aOptionLevel,TDes8& aOption)
