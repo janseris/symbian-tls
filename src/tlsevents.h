@@ -62,6 +62,7 @@ public:
 	// statistics for the per-connection "data summary" log line
 	TInt iAppBytes;
 	TInt iAppReads;
+	TInt iAppRecords;           // TLS records decrypted; several per app read since fix12
 	TInt iSockBytes;
 	TInt iSockReads;
 	TTime iFirstRead;

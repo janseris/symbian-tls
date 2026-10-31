@@ -130,7 +130,7 @@ CBio::CBio(CTlsConnection& aTlsConnection) :
   iReadState(0),
   iReadLength(-1),
   iWriteState(0),
-  iAppBytes(0), iAppReads(0), iSockBytes(0), iSockReads(0)
+  iAppBytes(0), iAppReads(0), iAppRecords(0), iSockBytes(0), iSockReads(0)
 {
 	aTlsConnection.MbedContext().SetBio(this, (TAny*) send_callback, (TAny*) recv_callback, NULL);
 }
@@ -150,8 +150,8 @@ CBio::~CBio()
 		TInt64 us = iLastRead.MicroSecondsFrom(iFirstRead).Int64();
 		TInt ms = (us / TInt64(1000)).Low();
 		TInt bps = ms > 0 ? (TInt64(iAppBytes) * TInt64(1000) / TInt64(ms)).Low() : 0;
-		LOG(Log::Printf(_L("data summary: %d B to the app in %d reads, %d B from the socket in %d reads, first->last read %d ms (%d B/s)"),
-			iAppBytes, iAppReads, iSockBytes, iSockReads, ms, bps));
+		LOG(Log::Printf(_L("data summary: %d B to the app in %d reads (%d TLS records), %d B from the socket in %d reads, first->last read %d ms (%d B/s)"),
+			iAppBytes, iAppReads, iAppRecords, iSockBytes, iSockReads, ms, bps));
 	}
 	LOG(Log::Printf(_L("~CBio()")));
 	delete iDataIn;
@@ -429,8 +429,23 @@ CAsynchEvent* CRecvEvent::ProcessL(TRequestStatus& aStatus)
 		LOG(Log::Printf(_L("Read error: %x"), -res));
 	} else {
 		LOGD(Log::Printf(_L("Recv %d"), res));
-		iBio.iAppBytes += res;
 		iBio.iAppReads++;
+		iBio.iAppRecords++;
+		// fix12: more records already received (in the 16 KB read-ahead) are decrypted into the same
+		// read while it has room, instead of one completion per record. Servers such as Cloudflare
+		// send ~1.4 KB records at the start of a connection: one record per completion meant ~85
+		// round trips a second through the app's and the adaptor's active objects. Stops at an
+		// incomplete record (WANT_READ: the next read then reads the socket, as before), at the
+		// end of what's buffered, or at EOF/an error (reported by the next read).
+		TInt total = offset + res;
+		while (total < iUserMaxLength && iBio.iRxPos < iBio.iRxLen && iBio.iReadState == 0 && iBio.iWriteState == 0) {
+			TInt more = iMbedContext.Read((unsigned char*) iUserData->Ptr() + total, iUserMaxLength - total);
+			if (more <= 0) break;
+			total += more;
+			iBio.iAppRecords++;
+		}
+		res = total - offset;
+		iBio.iAppBytes += res;
 		if (iBio.iAppReads == 1) iBio.iFirstRead.UniversalTime();
 		iBio.iLastRead.UniversalTime();
 
